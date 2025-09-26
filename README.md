@@ -7,6 +7,9 @@ Overview
   - GET /api/projects
   - GET /api/projects/:id
   - POST /api/projects
+  - PUT /api/projects/:id
+  - PATCH /api/projects/:id
+  - DELETE /api/projects/:id
   - GET /api/categories
 - GET /api/categories/:id
 - POST /api/categories

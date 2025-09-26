@@ -256,4 +256,119 @@ router.post("/", (req, res) => {
   }
 });
 
+// PUT /api/projects/:id
+router.put('/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const index = projects.findIndex(p => p.id === id);
+    if (index === -1) return res.status(404).json({ message: 'Project not found' });
+
+    const existing = projects[index];
+    const {
+      title,
+      description,
+      author,
+      university,
+      department,
+      year,
+      type,
+      category,
+      subject,
+      pages,
+      language,
+      price,
+      rating,
+      downloads,
+      tags,
+      abstract,
+      tableOfContents,
+      uploadDate,
+      fileSize,
+      format,
+      status
+    } = req.body || {};
+
+    // Minimal validation similar to POST
+    if (!title || !author || !category) {
+      return res.status(400).json({ message: 'title, author and category are required' });
+    }
+
+    const updated = {
+      ...existing,
+      title,
+      description,
+      author,
+      university,
+      department,
+      year: year !== undefined ? Number(year) : existing.year,
+      type,
+      category,
+      subject,
+      pages: pages !== undefined ? Number(pages) : existing.pages,
+      language,
+      price: price !== undefined ? Number(price) : existing.price,
+      rating: rating !== undefined ? Number(rating) : existing.rating,
+      downloads: downloads !== undefined ? Number(downloads) : existing.downloads,
+      tags: tags !== undefined ? tags : existing.tags,
+      abstract,
+      tableOfContents: tableOfContents !== undefined ? tableOfContents : existing.tableOfContents,
+      uploadDate,
+      fileSize,
+      format,
+      status
+    };
+
+    projects[index] = updated;
+    res.json(updated);
+  } catch (e) {
+    console.error('PUT /projects/:id error', e);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// PATCH /api/projects/:id
+router.patch('/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const index = projects.findIndex(p => p.id === id);
+    if (index === -1) return res.status(404).json({ message: 'Project not found' });
+
+    const existing = projects[index];
+    const body = req.body || {};
+
+    const updated = {
+      ...existing,
+      ...body,
+    };
+
+    // Coerce numeric fields when provided
+    if (body.year !== undefined) updated.year = Number(body.year);
+    if (body.pages !== undefined) updated.pages = Number(body.pages);
+    if (body.price !== undefined) updated.price = Number(body.price);
+    if (body.rating !== undefined) updated.rating = Number(body.rating);
+    if (body.downloads !== undefined) updated.downloads = Number(body.downloads);
+
+    projects[index] = updated;
+    res.json(updated);
+  } catch (e) {
+    console.error('PATCH /projects/:id error', e);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/projects/:id
+router.delete('/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const index = projects.findIndex(p => p.id === id);
+    if (index === -1) return res.status(404).json({ message: 'Project not found' });
+
+    const [deleted] = projects.splice(index, 1);
+    res.json({ message: 'Project deleted', project: deleted });
+  } catch (e) {
+    console.error('DELETE /projects/:id error', e);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
 export default router;
