@@ -1,8 +1,9 @@
 import express from "express"
+import { pool } from "../config/db.js";
+import { verifyToken } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// In-memory store (replace with a database in production)
 const projects = [
   {
     id: 1,
@@ -77,8 +78,9 @@ const projects = [
 // Filters: q (search in title/author), category, status, minPrice, maxPrice, minDownloads, maxDownloads, tag
 // Sorting: sortBy=createdAt|title|price|downloads, order=asc|desc
 // Pagination: page (1-based), limit
-router.get(`/`, (req, res) => {
+router.get(`/`, async (req, res) => {
   try {
+    if (!pool) return res.status(503).json({ message: 'Database unavailable' });
     const {
       q,
       category,
@@ -88,111 +90,139 @@ router.get(`/`, (req, res) => {
       minDownloads,
       maxDownloads,
       tag,
-      sortBy = 'createdAt',
+      university,
+      department,
+      year,
+      type,
+      subject,
+      language,
+      minRating,
+      sortBy = 'created_at',
       order = 'desc',
       page = '1',
       limit = '50'
     } = req.query;
-
-    let result = [...projects];
-
-    // Text search
+    const where = [];
+    const params = [];
     if (q) {
-      const needle = String(q).toLowerCase();
-      result = result.filter(p =>
-        (p.title && p.title.toLowerCase().includes(needle)) ||
-        (p.author && p.author.toLowerCase().includes(needle)) ||
-        (p.university && p.university.toLowerCase().includes(needle)) ||
-        (p.department && p.department.toLowerCase().includes(needle)) ||
-        (p.subject && p.subject.toLowerCase().includes(needle)) ||
-        (p.description && p.description.toLowerCase().includes(needle))
-      );
+      params.push(`%${String(q).toLowerCase()}%`);
+      where.push(`(lower(title) like $${params.length} or lower(author) like $${params.length} or lower(description) like $${params.length})`);
     }
-
-    // Category filter
     if (category) {
-      const categories = String(category).toLowerCase().split(',').map(s => s.trim());
-      result = result.filter(p => categories.includes(p.category.toLowerCase()));
+      params.push(String(category).toLowerCase());
+      where.push(`lower(category) = $${params.length}`);
     }
-
-    // Status filter
     if (status) {
-      const statuses = String(status).toLowerCase().split(',').map(s => s.trim());
-      result = result.filter(p => statuses.includes(p.status.toLowerCase()));
+      params.push(String(status).toLowerCase());
+      where.push(`lower(status) = $${params.length}`);
     }
-
-    // Tag filter
+    if (university) {
+      params.push(`%${String(university).toLowerCase()}%`);
+      where.push(`lower(university) like $${params.length}`);
+    }
+    if (department) {
+      params.push(`%${String(department).toLowerCase()}%`);
+      where.push(`lower(department) like $${params.length}`);
+    }
+    if (type) {
+      params.push(String(type).toLowerCase());
+      where.push(`lower(type) = $${params.length}`);
+    }
+    if (subject) {
+      params.push(`%${String(subject).toLowerCase()}%`);
+      where.push(`lower(subject) like $${params.length}`);
+    }
+    if (language) {
+      params.push(String(language).toLowerCase());
+      where.push(`lower(language) = $${params.length}`);
+    }
+    if (year !== undefined) {
+      params.push(Number(year));
+      where.push(`year = $${params.length}`);
+    }
+    if (minRating !== undefined) {
+      params.push(Number(minRating));
+      where.push(`rating >= $${params.length}`);
+    }
+    if (minPrice !== undefined) {
+      params.push(Number(minPrice));
+      where.push(`price >= $${params.length}`);
+    }
+    if (maxPrice !== undefined) {
+      params.push(Number(maxPrice));
+      where.push(`price <= $${params.length}`);
+    }
+    if (minDownloads !== undefined) {
+      params.push(Number(minDownloads));
+      where.push(`downloads >= $${params.length}`);
+    }
+    if (maxDownloads !== undefined) {
+      params.push(Number(maxDownloads));
+      where.push(`downloads <= $${params.length}`);
+    }
     if (tag) {
-      const tags = String(tag).toLowerCase().split(',').map(s => s.trim());
-      result = result.filter(p => p.tags?.some(t => tags.includes(String(t).toLowerCase())));
+      params.push(String(tag).toLowerCase());
+      where.push(`exists (select 1 from jsonb_array_elements_text(tags) t where lower(t) = $${params.length})`);
     }
-
-    // Numeric filters
-    const minP = minPrice !== undefined ? Number(minPrice) : undefined;
-    const maxP = maxPrice !== undefined ? Number(maxPrice) : undefined;
-    const minD = minDownloads !== undefined ? Number(minDownloads) : undefined;
-    const maxD = maxDownloads !== undefined ? Number(maxDownloads) : undefined;
-
-    if (Number.isNaN(minP) || Number.isNaN(maxP) || Number.isNaN(minD) || Number.isNaN(maxD)) {
-      return res.status(400).json({ message: 'Invalid numeric filter provided' });
-    }
-
-    if (minP !== undefined) result = result.filter(p => p.price >= minP);
-    if (maxP !== undefined) result = result.filter(p => p.price <= maxP);
-    if (minD !== undefined) result = result.filter(p => p.downloads >= minD);
-    if (maxD !== undefined) result = result.filter(p => p.downloads <= maxD);
-
-    // Sorting
-    const sortable = new Set(['createdAt', 'title', 'price', 'downloads']);
-    const sortField = sortable.has(String(sortBy)) ? String(sortBy) : 'createdAt';
-    const sortOrder = String(order).toLowerCase() === 'asc' ? 1 : -1;
-    result.sort((a, b) => {
-      const va = a[sortField];
-      const vb = b[sortField];
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1 * sortOrder;
-      if (vb == null) return -1 * sortOrder;
-      if (typeof va === 'string' && typeof vb === 'string') {
-        return va.localeCompare(vb) * sortOrder;
-      }
-      return (va > vb ? 1 : va < vb ? -1 : 0) * sortOrder;
-    });
-
-    // Pagination
+    const sortable = new Set(['created_at', 'title', 'price', 'downloads', 'year', 'rating']);
+    const field = sortable.has(String(sortBy)) ? String(sortBy) : 'created_at';
+    const sortOrder = String(order).toLowerCase() === 'asc' ? 'asc' : 'desc';
     const pageNum = Math.max(1, parseInt(String(page)) || 1);
     const limitNum = Math.max(1, Math.min(100, parseInt(String(limit)) || 50));
-    const total = result.length;
-    const start = (pageNum - 1) * limitNum;
-    const paginated = result.slice(start, start + limitNum);
-
+    const offset = (pageNum - 1) * limitNum;
+    const baseSql = `
+      from projects
+      ${where.length ? `where ${where.join(' and ')}` : ''}
+    `;
+    const { rows: countRows } = await pool.query(`select count(*) as c ${baseSql}`, params);
+    const total = Number(countRows[0].c);
+    const { rows } = await pool.query(
+      `
+      select
+        id, title, description, author, university, department, year, type, category, subject,
+        pages, language, price, rating, downloads, tags, abstract, table_of_contents as "tableOfContents",
+        upload_date as "uploadDate", file_size as "fileSize", format, status, created_at as "createdAt"
+      ${baseSql}
+      order by ${field} ${sortOrder}
+      limit $${params.length + 1} offset $${params.length + 2}
+      `,
+      [...params, limitNum, offset]
+    );
     res.json({
-      data: paginated,
-      pagination: {
-        total,
-        page: pageNum,
-        limit: limitNum,
-        pages: Math.ceil(total / limitNum)
-      },
-      sort: { by: sortField, order: sortOrder === 1 ? 'asc' : 'desc' },
-      filters: { q, category, status, minPrice: minP, maxPrice: maxP, minDownloads: minD, maxDownloads: maxD, tag }
+      data: rows,
+      pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
+      sort: { by: field, order: sortOrder }
     });
-  } catch (e) {
-    console.error('GET /projects error', e);
+  } catch {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
 // GET /api/projects/:id
-router.get(`/:id`, (req, res) => {
-  const id = Number(req.params.id);
-  const project = projects.find(p => p.id === id);
-  if (!project) return res.status(404).json({ message: "Project not found" });
-  res.json(project);
+router.get(`/:id`, async (req, res) => {
+  try {
+    if (!pool) return res.status(503).json({ message: 'Database unavailable' });
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      `select
+        id, title, description, author, university, department, year, type, category, subject,
+        pages, language, price, rating, downloads, tags, abstract, table_of_contents as "tableOfContents",
+        upload_date as "uploadDate", file_size as "fileSize", format, status, created_at as "createdAt"
+       from projects where id = $1`,
+      [id]
+    );
+    const project = rows[0];
+    if (!project) return res.status(404).json({ message: 'Project not found' });
+    res.json(project);
+  } catch {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
 });
 
 // POST /api/projects
-router.post("/", (req, res) => {
+router.post("/", verifyToken, async (req, res) => {
   try {
+    if (!pool) return res.status(503).json({ message: 'Database unavailable' });
     const {
       title,
       description,
@@ -216,54 +246,54 @@ router.post("/", (req, res) => {
       format,
       status = 'Unpublished'
     } = req.body || {};
-
     if (!title || !author || !category) {
       return res.status(400).json({ message: 'title, author and category are required' });
     }
-
-    const id = projects.length ? Math.max(...projects.map(p => p.id)) + 1 : 1;
-    const project = {
-      id,
-      title,
-      description,
-      author,
-      university,
-      department,
-      year: year !== undefined ? Number(year) : undefined,
-      type,
-      category,
-      subject,
-      pages: pages !== undefined ? Number(pages) : undefined,
-      language,
-      price: Number(price) || 0,
-      rating: rating !== undefined ? Number(rating) : undefined,
-      downloads: Number(downloads) || 0,
-      tags,
-      abstract,
-      tableOfContents,
-      uploadDate,
-      fileSize,
-      format,
-      status,
-      createdAt: new Date().toISOString()
-    };
-
-    projects.push(project);
-    res.status(201).json(project);
-  } catch (e) {
-    console.error('POST /projects error', e);
+    await pool.query(
+      `insert into categories (title) values ($1) on conflict (title) do nothing`,
+      [category]
+    );
+    const { rows } = await pool.query(
+      `insert into projects
+       (title, description, author, university, department, year, type, category, subject, pages, language, price, rating, downloads, tags, abstract, table_of_contents, upload_date, file_size, format, status)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       returning
+       id, title, description, author, university, department, year, type, category, subject,
+       pages, language, price, rating, downloads, tags, abstract, table_of_contents as "tableOfContents",
+       upload_date as "uploadDate", file_size as "fileSize", format, status, created_at as "createdAt"`,
+      [
+        title, description, author, university, department,
+        year !== undefined ? Number(year) : null,
+        type, category, subject,
+        pages !== undefined ? Number(pages) : null,
+        language,
+        price !== undefined ? Number(price) : null,
+        rating !== undefined ? Number(rating) : null,
+        Number(downloads) || 0,
+        Array.isArray(tags) ? JSON.stringify(tags) : JSON.stringify([]),
+        abstract,
+        Array.isArray(tableOfContents) ? JSON.stringify(tableOfContents) : JSON.stringify([]),
+        uploadDate ? new Date(uploadDate) : null,
+        fileSize !== undefined ? Number(fileSize) : null,
+        format,
+        status
+      ]
+    );
+    await pool.query(
+      `update categories set project_count = project_count + 1 where title = $1`,
+      [category]
+    );
+    res.status(201).json(rows[0]);
+  } catch {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
 // PUT /api/projects/:id
-router.put('/:id', (req, res) => {
+router.put('/:id', verifyToken, async (req, res) => {
   try {
+    if (!pool) return res.status(503).json({ message: 'Database unavailable' });
     const id = Number(req.params.id);
-    const index = projects.findIndex(p => p.id === id);
-    if (index === -1) return res.status(404).json({ message: 'Project not found' });
-
-    const existing = projects[index];
     const {
       title,
       description,
@@ -287,86 +317,112 @@ router.put('/:id', (req, res) => {
       format,
       status
     } = req.body || {};
-
-    // Minimal validation similar to POST
     if (!title || !author || !category) {
       return res.status(400).json({ message: 'title, author and category are required' });
     }
-
-    const updated = {
-      ...existing,
-      title,
-      description,
-      author,
-      university,
-      department,
-      year: year !== undefined ? Number(year) : existing.year,
-      type,
-      category,
-      subject,
-      pages: pages !== undefined ? Number(pages) : existing.pages,
-      language,
-      price: price !== undefined ? Number(price) : existing.price,
-      rating: rating !== undefined ? Number(rating) : existing.rating,
-      downloads: downloads !== undefined ? Number(downloads) : existing.downloads,
-      tags: tags !== undefined ? tags : existing.tags,
-      abstract,
-      tableOfContents: tableOfContents !== undefined ? tableOfContents : existing.tableOfContents,
-      uploadDate,
-      fileSize,
-      format,
-      status
-    };
-
-    projects[index] = updated;
-    res.json(updated);
-  } catch (e) {
-    console.error('PUT /projects/:id error', e);
+    await pool.query(
+      `update projects set
+        title=$1, description=$2, author=$3, university=$4, department=$5, year=$6, type=$7, category=$8, subject=$9,
+        pages=$10, language=$11, price=$12, rating=$13, downloads=$14, tags=$15, abstract=$16, table_of_contents=$17,
+        upload_date=$18, file_size=$19, format=$20, status=$21
+       where id=$22`,
+      [
+        title, description, author, university, department,
+        year !== undefined ? Number(year) : null,
+        type, category, subject,
+        pages !== undefined ? Number(pages) : null,
+        language,
+        price !== undefined ? Number(price) : null,
+        rating !== undefined ? Number(rating) : null,
+        downloads !== undefined ? Number(downloads) : null,
+        tags !== undefined ? JSON.stringify(tags) : null,
+        abstract !== undefined ? abstract : null,
+        tableOfContents !== undefined ? JSON.stringify(tableOfContents) : null,
+        uploadDate ? new Date(uploadDate) : null,
+        fileSize !== undefined ? Number(fileSize) : null,
+        format !== undefined ? format : null,
+        status !== undefined ? status : null,
+        id
+      ]
+    );
+    const { rows } = await pool.query(
+      `select
+        id, title, description, author, university, department, year, type, category, subject,
+        pages, language, price, rating, downloads, tags, abstract, table_of_contents as "tableOfContents",
+        upload_date as "uploadDate", file_size as "fileSize", format, status, created_at as "createdAt"
+       from projects where id = $1`,
+      [id]
+    );
+    res.json(rows[0]);
+  } catch {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
 // PATCH /api/projects/:id
-router.patch('/:id', (req, res) => {
+router.patch('/:id', verifyToken, async (req, res) => {
   try {
+    if (!pool) return res.status(503).json({ message: 'Database unavailable' });
     const id = Number(req.params.id);
-    const index = projects.findIndex(p => p.id === id);
-    if (index === -1) return res.status(404).json({ message: 'Project not found' });
-
-    const existing = projects[index];
+    const existing = await pool.query(`select * from projects where id=$1`, [id]);
+    if (!existing.rows[0]) return res.status(404).json({ message: 'Project not found' });
     const body = req.body || {};
-
     const updated = {
-      ...existing,
-      ...body,
+      ...existing.rows[0],
+      ...body
     };
-
-    // Coerce numeric fields when provided
-    if (body.year !== undefined) updated.year = Number(body.year);
-    if (body.pages !== undefined) updated.pages = Number(body.pages);
-    if (body.price !== undefined) updated.price = Number(body.price);
-    if (body.rating !== undefined) updated.rating = Number(body.rating);
-    if (body.downloads !== undefined) updated.downloads = Number(body.downloads);
-
-    projects[index] = updated;
-    res.json(updated);
-  } catch (e) {
-    console.error('PATCH /projects/:id error', e);
+    await pool.query(
+      `update projects set
+        title=$1, description=$2, author=$3, university=$4, department=$5, year=$6, type=$7, category=$8, subject=$9,
+        pages=$10, language=$11, price=$12, rating=$13, downloads=$14, tags=$15, abstract=$16, table_of_contents=$17,
+        upload_date=$18, file_size=$19, format=$20, status=$21
+       where id=$22`,
+      [
+        updated.title, updated.description, updated.author, updated.university, updated.department,
+        updated.year !== undefined ? Number(updated.year) : null,
+        updated.type, updated.category, updated.subject,
+        updated.pages !== undefined ? Number(updated.pages) : null,
+        updated.language,
+        updated.price !== undefined ? Number(updated.price) : null,
+        updated.rating !== undefined ? Number(updated.rating) : null,
+        updated.downloads !== undefined ? Number(updated.downloads) : null,
+        updated.tags !== undefined ? JSON.stringify(updated.tags) : null,
+        updated.abstract !== undefined ? updated.abstract : null,
+        updated.tableOfContents !== undefined ? JSON.stringify(updated.tableOfContents) : null,
+        updated.uploadDate ? new Date(updated.uploadDate) : null,
+        updated.fileSize !== undefined ? Number(updated.fileSize) : null,
+        updated.format !== undefined ? updated.format : null,
+        updated.status !== undefined ? updated.status : null,
+        id
+      ]
+    );
+    const { rows } = await pool.query(
+      `select
+        id, title, description, author, university, department, year, type, category, subject,
+        pages, language, price, rating, downloads, tags, abstract, table_of_contents as "tableOfContents",
+        upload_date as "uploadDate", file_size as "fileSize", format, status, created_at as "createdAt"
+       from projects where id = $1`,
+      [id]
+    );
+    res.json(rows[0]);
+  } catch {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
 // DELETE /api/projects/:id
-router.delete('/:id', (req, res) => {
+router.delete('/:id', verifyToken, async (req, res) => {
   try {
+    if (!pool) return res.status(503).json({ message: 'Database unavailable' });
     const id = Number(req.params.id);
-    const index = projects.findIndex(p => p.id === id);
-    if (index === -1) return res.status(404).json({ message: 'Project not found' });
-
-    const [deleted] = projects.splice(index, 1);
-    res.json({ message: 'Project deleted', project: deleted });
-  } catch (e) {
-    console.error('DELETE /projects/:id error', e);
+    const { rows } = await pool.query(`delete from projects where id=$1 returning category`, [id]);
+    if (!rows[0]) return res.status(404).json({ message: 'Project not found' });
+    await pool.query(
+      `update categories set project_count = greatest(project_count - 1, 0) where title=$1`,
+      [rows[0].category]
+    );
+    res.json({ message: 'Project deleted' });
+  } catch {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
